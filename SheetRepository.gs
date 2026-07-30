@@ -4,18 +4,30 @@
  * 行ごとにgetRangeを呼ばず、一括読み書きを優先する
  */
 
-// スプレッドシートID（空ならアクティブなスプレッドシートを使用）
-const SPREADSHEET_ID = ''; // 例: 'YOUR_SPREADSHEET_ID'
-
 /**
  * スプレッドシートを取得
  * @returns {GoogleAppsScript.Spreadsheet.Spreadsheet}
  */
 function getSpreadsheet() {
-  if (SPREADSHEET_ID) {
-    return SpreadsheetApp.openById(SPREADSHEET_ID);
+  const spreadsheetId = PropertiesService
+    .getScriptProperties()
+    .getProperty('SPREADSHEET_ID');
+
+  if (!spreadsheetId) {
+    throw new Error(
+      `${ERROR_CATEGORY.CONFIG_MISSING}: ` +
+      'Script PropertiesのSPREADSHEET_IDが未設定です'
+    );
   }
-  return SpreadsheetApp.getActiveSpreadsheet();
+
+  try {
+    return SpreadsheetApp.openById(spreadsheetId);
+  } catch (error) {
+    throw new Error(
+      `${ERROR_CATEGORY.CONFIG_MISSING}: ` +
+      `スプレッドシートを開けません: ${safeErrorMessage(error)}`
+    );
+  }
 }
 
 /**
@@ -24,8 +36,8 @@ function getSpreadsheet() {
  * @returns {GoogleAppsScript.Spreadsheet.Sheet|null}
  */
 function getSheet(name) {
-  const ss = getSpreadsheet();
-  return ss.getSheetByName(name) || null;
+  const spreadsheet = getSpreadsheet();
+  return spreadsheet.getSheetByName(name) || null;
 }
 
 /**
@@ -34,12 +46,33 @@ function getSheet(name) {
  * @returns {GoogleAppsScript.Spreadsheet.Sheet}
  */
 function getOrCreateSheet(name) {
-  const ss = getSpreadsheet();
-  let sheet = ss.getSheetByName(name);
+  const spreadsheet = getSpreadsheet();
+  let sheet = spreadsheet.getSheetByName(name);
+
   if (!sheet) {
-    sheet = ss.insertSheet(name);
+    sheet = spreadsheet.insertSheet(name);
   }
+
   return sheet;
+}
+
+/**
+ * Googleフォームの回答先シートを取得する
+ * @returns {GoogleAppsScript.Spreadsheet.Sheet|null}
+ */
+function getFormResponseSheet() {
+  const sheetName = String(
+    getSetting(
+      'form_response_sheet_name',
+      'フォームの回答 1'
+    )
+  ).trim();
+
+  if (!sheetName) {
+    return null;
+  }
+
+  return getSpreadsheet().getSheetByName(sheetName) || null;
 }
 
 // ---------------------------------------------------------------------------
@@ -53,16 +86,21 @@ function getOrCreateSheet(name) {
  */
 function setSetting(key, value) {
   const sheet = getSheet(SHEET.SETTINGS);
-  if (!sheet) return;
+
+  if (!sheet) {
+    return;
+  }
+
   const data = sheet.getDataRange().getValues();
+
   for (let i = 1; i < data.length; i++) {
-    if (String(data[i][0]).trim() === key) {
+    if (String(data[i][0] || '').trim() === String(key).trim()) {
       sheet.getRange(i + 1, 2).setValue(value);
       clearSettingsCache();
       return;
     }
   }
-  // 存在しない場合は末尾に追加
+
   sheet.appendRow([key, value]);
   clearSettingsCache();
 }
@@ -71,11 +109,21 @@ function setSetting(key, value) {
 // earthquake_events
 // ---------------------------------------------------------------------------
 
-/** earthquake_events ヘッダー */
 const EQ_HEADERS = [
-  'event_id', 'occurred_at', 'announced_at', 'hypocenter', 'magnitude',
-  'max_intensity', 'source_url', 'detected_at', 'status', 'target_count',
-  'sent_count', 'failed_count', 'completed_at', 'error',
+  'event_id',
+  'occurred_at',
+  'announced_at',
+  'hypocenter',
+  'magnitude',
+  'max_intensity',
+  'source_url',
+  'detected_at',
+  'status',
+  'target_count',
+  'sent_count',
+  'failed_count',
+  'completed_at',
+  'error',
 ];
 
 /**
@@ -84,13 +132,26 @@ const EQ_HEADERS = [
  */
 function appendEvent(event) {
   const sheet = getSheet(SHEET.EARTHQUAKE_EVENTS);
-  if (!sheet) throw new Error('earthquake_eventsシートが見つかりません');
+
+  if (!sheet) {
+    throw new Error(
+      'earthquake_eventsシートが見つかりません'
+    );
+  }
+
   sheet.appendRow([
     event.eventId,
-    event.occurredAt ? event.occurredAt.toISOString() : '',
-    event.announcedAt ? event.announcedAt.toISOString() : '',
+    event.occurredAt
+      ? event.occurredAt.toISOString()
+      : '',
+    event.announcedAt
+      ? event.announcedAt.toISOString()
+      : '',
     event.hypocenter || '',
-    event.magnitude !== null && event.magnitude !== undefined ? event.magnitude : '',
+    event.magnitude !== null &&
+    event.magnitude !== undefined
+      ? event.magnitude
+      : '',
     event.maxIntensity || '',
     event.sourceUrl || '',
     event.detectedAt || nowIso(),
@@ -106,21 +167,49 @@ function appendEvent(event) {
 /**
  * event_idでイベント行を検索して更新
  * @param {string} eventId
- * @param {Object} values - 更新するキーと値のペア
+ * @param {Object} values
  */
 function updateEvent(eventId, values) {
   const sheet = getSheet(SHEET.EARTHQUAKE_EVENTS);
-  if (!sheet) return;
+
+  if (!sheet) {
+    return;
+  }
+
   const data = sheet.getDataRange().getValues();
-  const headers = data[0];
+
+  if (data.length === 0) {
+    return;
+  }
+
+  const headers = data[0].map(
+    header => String(header || '').trim()
+  );
+
+  const eventIdColumnIndex = headers.indexOf('event_id');
+
+  if (eventIdColumnIndex < 0) {
+    throw new Error(
+      `${ERROR_CATEGORY.CONFIG_MISSING}: ` +
+      'earthquake_eventsシートにevent_id列がありません'
+    );
+  }
+
   for (let i = 1; i < data.length; i++) {
-    if (String(data[i][0]).trim() === String(eventId).trim()) {
-      for (const [key, val] of Object.entries(values)) {
-        const col = headers.indexOf(key);
-        if (col >= 0) {
-          sheet.getRange(i + 1, col + 1).setValue(val);
+    if (
+      String(data[i][eventIdColumnIndex] || '').trim() ===
+      String(eventId || '').trim()
+    ) {
+      for (const [key, value] of Object.entries(values)) {
+        const columnIndex = headers.indexOf(key);
+
+        if (columnIndex >= 0) {
+          sheet
+            .getRange(i + 1, columnIndex + 1)
+            .setValue(value);
         }
       }
+
       return;
     }
   }
@@ -133,17 +222,41 @@ function updateEvent(eventId, values) {
  */
 function findEvent(eventId) {
   const sheet = getSheet(SHEET.EARTHQUAKE_EVENTS);
-  if (!sheet) return null;
+
+  if (!sheet) {
+    return null;
+  }
+
   const data = sheet.getDataRange().getValues();
-  if (data.length < 2) return null;
-  const headers = data[0];
+
+  if (data.length < 2) {
+    return null;
+  }
+
+  const headers = data[0].map(
+    header => String(header || '').trim()
+  );
+  const eventIdColumnIndex = headers.indexOf('event_id');
+
+  if (eventIdColumnIndex < 0) {
+    return null;
+  }
+
   for (let i = 1; i < data.length; i++) {
-    if (String(data[i][0]).trim() === String(eventId).trim()) {
-      const obj = {};
-      headers.forEach((h, idx) => { obj[String(h).trim()] = data[i][idx]; });
-      return obj;
+    if (
+      String(data[i][eventIdColumnIndex] || '').trim() ===
+      String(eventId || '').trim()
+    ) {
+      const event = {};
+
+      headers.forEach((header, index) => {
+        event[header] = data[i][index];
+      });
+
+      return event;
     }
   }
+
   return null;
 }
 
@@ -153,67 +266,134 @@ function findEvent(eventId) {
  * @returns {boolean}
  */
 function isEventAlreadyCompleted(eventId) {
-  const ev = findEvent(eventId);
-  if (!ev) return false;
+  const event = findEvent(eventId);
+
+  if (!event) {
+    return false;
+  }
+
   const completedStatuses = [
     EVENT_STATUS.COMPLETED,
     EVENT_STATUS.PARTIAL_FAILED,
     EVENT_STATUS.TEST_COMPLETED,
   ];
-  return completedStatuses.includes(String(ev.status).trim());
+
+  return completedStatuses.includes(
+    String(event.status || '').trim()
+  );
 }
 
 // ---------------------------------------------------------------------------
 // notification_status
 // ---------------------------------------------------------------------------
 
-/** notification_status ヘッダー */
 const NS_HEADERS = [
-  'notification_key', 'event_id', 'employee_id', 'email', 'channel',
-  'status', 'attempts', 'created_at', 'sending_at', 'sent_at',
-  'responded_at', 'error',
+  'notification_key',
+  'event_id',
+  'employee_id',
+  'name',
+  'email',
+  'channel',
+  'status',
+  'attempts',
+  'created_at',
+  'sending_at',
+  'sent_at',
+  'responded_at',
+  'error',
 ];
 
 /**
- * notification_key で通知レコードを検索
+ * notification_keyで通知レコードを検索
  * @param {string} notificationKey
  * @returns {Object|null}
  */
 function findNotification(notificationKey) {
   const sheet = getSheet(SHEET.NOTIFICATION_STATUS);
-  if (!sheet) return null;
+
+  if (!sheet) {
+    return null;
+  }
+
   const data = sheet.getDataRange().getValues();
-  if (data.length < 2) return null;
-  const headers = data[0];
+
+  if (data.length < 2) {
+    return null;
+  }
+
+  const headers = data[0].map(
+    header => String(header || '').trim()
+  );
+  const keyColumnIndex = headers.indexOf('notification_key');
+
+  if (keyColumnIndex < 0) {
+    return null;
+  }
+
   for (let i = 1; i < data.length; i++) {
-    if (String(data[i][0]).trim() === notificationKey) {
-      const obj = {};
-      headers.forEach((h, idx) => { obj[String(h).trim()] = data[i][idx]; });
-      obj._rowIndex = i + 1;
-      return obj;
+    if (
+      String(data[i][keyColumnIndex] || '').trim() ===
+      String(notificationKey || '').trim()
+    ) {
+      const notification = {};
+
+      headers.forEach((header, index) => {
+        notification[header] = data[i][index];
+      });
+
+      notification._rowIndex = i + 1;
+      return notification;
     }
   }
+
   return null;
 }
 
 /**
- * notification_key で通知レコードを更新
+ * notification_keyで通知レコードを更新
  * @param {string} notificationKey
  * @param {Object} values
  */
 function updateNotification(notificationKey, values) {
   const sheet = getSheet(SHEET.NOTIFICATION_STATUS);
-  if (!sheet) return;
+
+  if (!sheet) {
+    return;
+  }
+
   const data = sheet.getDataRange().getValues();
-  const headers = data[0];
+
+  if (data.length === 0) {
+    return;
+  }
+
+  const headers = data[0].map(
+    header => String(header || '').trim()
+  );
+  const keyColumnIndex = headers.indexOf('notification_key');
+
+  if (keyColumnIndex < 0) {
+    throw new Error(
+      `${ERROR_CATEGORY.CONFIG_MISSING}: ` +
+      'notification_statusシートにnotification_key列がありません'
+    );
+  }
+
   for (let i = 1; i < data.length; i++) {
-    if (String(data[i][0]).trim() === notificationKey) {
-      for (const [key, val] of Object.entries(values)) {
-        const col = headers.indexOf(key);
-        if (col >= 0) {
-          sheet.getRange(i + 1, col + 1).setValue(val);
+    if (
+      String(data[i][keyColumnIndex] || '').trim() ===
+      String(notificationKey || '').trim()
+    ) {
+      for (const [key, value] of Object.entries(values)) {
+        const columnIndex = headers.indexOf(key);
+
+        if (columnIndex >= 0) {
+          sheet
+            .getRange(i + 1, columnIndex + 1)
+            .setValue(value);
         }
       }
+
       return;
     }
   }
@@ -221,25 +401,76 @@ function updateNotification(notificationKey, values) {
 
 /**
  * 通知レコードを末尾へ追加
+ * シートの列順ではなくヘッダー名に基づいて値を配置する
+ *
  * @param {Object} record
  */
 function appendNotification(record) {
   const sheet = getSheet(SHEET.NOTIFICATION_STATUS);
-  if (!sheet) throw new Error('notification_statusシートが見つかりません');
-  sheet.appendRow([
-    record.notificationKey,
-    record.eventId,
-    record.employeeId,
-    record.email,
-    record.channel,
-    record.status || NOTIFICATION_STATUS.PENDING,
-    record.attempts || 0,
-    record.createdAt || nowIso(),
-    '',  // sending_at
-    '',  // sent_at
-    '',  // responded_at
-    '',  // error
-  ]);
+
+  if (!sheet) {
+    throw new Error(
+      'notification_statusシートが見つかりません'
+    );
+  }
+
+  const lastColumn = sheet.getLastColumn();
+
+  if (lastColumn < 1) {
+    throw new Error(
+      `${ERROR_CATEGORY.CONFIG_MISSING}: ` +
+      'notification_statusシートにヘッダーがありません'
+    );
+  }
+
+  const headers = sheet
+    .getRange(1, 1, 1, lastColumn)
+    .getValues()[0]
+    .map(header => String(header || '').trim());
+
+  const missingHeaders = NS_HEADERS.filter(
+    header => !headers.includes(header)
+  );
+
+  if (missingHeaders.length > 0) {
+    throw new Error(
+      `${ERROR_CATEGORY.CONFIG_MISSING}: ` +
+      'notification_statusシートの必須列が不足しています: ' +
+      missingHeaders.join(', ')
+    );
+  }
+
+  const valuesByHeader = {
+    notification_key: record.notificationKey,
+    event_id: record.eventId,
+    employee_id: record.employeeId,
+    name: record.name || '',
+    email: record.email,
+    channel: record.channel,
+    status:
+      record.status || NOTIFICATION_STATUS.PENDING,
+    attempts: record.attempts || 0,
+    created_at: record.createdAt || nowIso(),
+    sending_at: '',
+    sent_at: '',
+    responded_at: '',
+    error: '',
+  };
+
+  const row = headers.map(header => {
+    if (
+      Object.prototype.hasOwnProperty.call(
+        valuesByHeader,
+        header
+      )
+    ) {
+      return valuesByHeader[header];
+    }
+
+    return '';
+  });
+
+  sheet.appendRow(row);
 }
 
 /**
@@ -249,30 +480,60 @@ function appendNotification(record) {
  */
 function getNotificationsByEventId(eventId) {
   const sheet = getSheet(SHEET.NOTIFICATION_STATUS);
-  if (!sheet) return [];
+
+  if (!sheet) {
+    return [];
+  }
+
   const data = sheet.getDataRange().getValues();
-  if (data.length < 2) return [];
-  const headers = data[0];
+
+  if (data.length < 2) {
+    return [];
+  }
+
+  const headers = data[0].map(
+    header => String(header || '').trim()
+  );
+  const eventIdColumnIndex = headers.indexOf('event_id');
+
+  if (eventIdColumnIndex < 0) {
+    throw new Error(
+      `${ERROR_CATEGORY.CONFIG_MISSING}: ` +
+      'notification_statusシートにevent_id列がありません'
+    );
+  }
+
   const results = [];
+
   for (let i = 1; i < data.length; i++) {
-    if (String(data[i][1]).trim() === String(eventId).trim()) {
-      const obj = {};
-      headers.forEach((h, idx) => { obj[String(h).trim()] = data[i][idx]; });
-      obj._rowIndex = i + 1;
-      results.push(obj);
+    if (
+      String(data[i][eventIdColumnIndex] || '').trim() ===
+      String(eventId || '').trim()
+    ) {
+      const notification = {};
+
+      headers.forEach((header, index) => {
+        notification[header] = data[i][index];
+      });
+
+      notification._rowIndex = i + 1;
+      results.push(notification);
     }
   }
+
   return results;
 }
 
 /**
- * 特定イベントの pending 通知レコードを取得
+ * 特定イベントのpending通知レコードを取得
  * @param {string} eventId
  * @returns {Array<Object>}
  */
 function getPendingNotifications(eventId) {
   return getNotificationsByEventId(eventId).filter(
-    n => String(n.status).trim() === NOTIFICATION_STATUS.PENDING
+    notification =>
+      String(notification.status || '').trim() ===
+      NOTIFICATION_STATUS.PENDING
   );
 }
 
@@ -286,7 +547,11 @@ function getPendingNotifications(eventId) {
  */
 function appendSendError(error) {
   const sheet = getSheet(SHEET.SEND_ERRORS);
-  if (!sheet) return;
+
+  if (!sheet) {
+    return;
+  }
+
   sheet.appendRow([
     error.timestamp || nowIso(),
     error.eventId || '',
@@ -300,25 +565,41 @@ function appendSendError(error) {
 }
 
 // ---------------------------------------------------------------------------
-// form_responses（読み取り専用）
+// Googleフォーム回答（読み取り専用）
 // ---------------------------------------------------------------------------
 
 /**
- * form_responsesシートの全回答を取得
+ * 設定されたGoogleフォーム回答シートの全回答を取得
  * @returns {Array<Object>}
  */
 function getAllFormResponses() {
-  const sheet = getSheet(SHEET.FORM_RESPONSES);
-  if (!sheet) return [];
-  const data = sheet.getDataRange().getValues();
-  if (data.length < 2) return [];
-  const headers = data[0];
-  const results = [];
-  for (let i = 1; i < data.length; i++) {
-    const obj = {};
-    headers.forEach((h, idx) => { obj[String(h).trim()] = data[i][idx]; });
-    results.push(obj);
+  const sheet = getFormResponseSheet();
+
+  if (!sheet) {
+    return [];
   }
+
+  const data = sheet.getDataRange().getValues();
+
+  if (data.length < 2) {
+    return [];
+  }
+
+  const headers = data[0].map(
+    header => String(header || '').trim()
+  );
+  const results = [];
+
+  for (let i = 1; i < data.length; i++) {
+    const response = {};
+
+    headers.forEach((header, index) => {
+      response[header] = data[i][index];
+    });
+
+    results.push(response);
+  }
+
   return results;
 }
 
@@ -328,7 +609,19 @@ function getAllFormResponses() {
  * @returns {Array<Object>}
  */
 function getFormResponsesByEventId(eventId) {
-  return getAllFormResponses().filter(r =>
-    String(r['event_id'] || r['eventId'] || '').trim() === String(eventId).trim()
+  const normalizedEventId = String(
+    eventId || ''
+  ).trim();
+
+  if (!normalizedEventId) {
+    return [];
+  }
+
+  return getAllFormResponses().filter(response =>
+    String(
+      response['event_id'] ||
+      response['eventId'] ||
+      ''
+    ).trim() === normalizedEventId
   );
 }

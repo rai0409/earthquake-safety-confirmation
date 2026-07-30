@@ -46,6 +46,7 @@ function hasManagedTrigger(handlerFunction) {
 /**
  * トリガーのインストール
  * 重複トリガーを作らない
+ * フォーム回答は回答先スプレッドシートのonFormSubmitで受信する
  */
 function installTriggers() {
   const checkIntervalMinutes = getNumSetting('check_interval_minutes', 10);
@@ -62,25 +63,25 @@ function installTriggers() {
     Logger.log(`トリガー既存: ${TRIGGER_HANDLER_EARTHQUAKE}`);
   }
 
-  // フォーム回答トリガーはフォームを開いて手動設定するか、
-  // フォームIDが分かっている場合は以下で設定できる
-  // （フォームIDはsettingsから取得）
-  const formId = getSetting('form_id', '');
-  if (formId && !hasManagedTrigger(TRIGGER_HANDLER_FORM)) {
+  // e.namedValuesを使用するため、
+  // Googleフォーム本体ではなく回答先スプレッドシートへ設定する
+  if (!hasManagedTrigger(TRIGGER_HANDLER_FORM)) {
     try {
-      const form = FormApp.openById(formId);
+      const spreadsheet = getSpreadsheet();
       const trigger = ScriptApp.newTrigger(TRIGGER_HANDLER_FORM)
-        .forForm(form)
+        .forSpreadsheet(spreadsheet)
         .onFormSubmit()
         .create();
       saveManagedTriggerId(trigger.getUniqueId());
       Logger.log(`トリガー作成: ${TRIGGER_HANDLER_FORM}`);
     } catch (err) {
       Logger.log(`フォームトリガー作成失敗: ${safeErrorMessage(err)}`);
-      Logger.log('フォームIDが正しいか確認してください。settings.form_idへフォームIDを設定してください。');
+      Logger.log(
+        'SPREADSHEET_IDとGoogleフォームの回答先設定を確認してください。'
+      );
     }
-  } else if (!formId) {
-    Logger.log('フォームトリガー: settings.form_idが未設定のためスキップ。手動でトリガーを設定してください。');
+  } else {
+    Logger.log(`トリガー既存: ${TRIGGER_HANDLER_FORM}`);
   }
 }
 

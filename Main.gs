@@ -19,10 +19,41 @@ function checkEarthquakeAndNotify() {
   try {
     clearSettingsCache();
 
+    const isTestMode = getBoolSetting('test_mode', true);
+
+    if (isTestMode) {
+      Logger.log(
+        'test_mode=TRUEのため自動地震送信を停止しています。' +
+        '1通の確認にはsendTestNotification()を使用してください。'
+      );
+      return;
+    }
+
     const enabled = getBoolSetting('enabled', false);
     if (!enabled) {
       Logger.log('システムが無効です (enabled=FALSE)');
       return;
+    }
+
+    try {
+      resetAllStaleSendingNotifications();
+
+      const resumeResult = resumePendingNotifications();
+
+      if (resumeResult.processedEvents > 0) {
+        Logger.log(
+          `未完了通知再開: events=${resumeResult.processedEvents}, ` +
+          `sent=${resumeResult.sent}, failed=${resumeResult.failed}, ` +
+          `incomplete=${resumeResult.incompleteEvents}`
+        );
+      }
+    } catch (error) {
+      Logger.log(
+        `未完了通知の回復処理に失敗: ${safeErrorMessage(error)}`
+      );
+      notifyAdmin(
+        `[未完了通知回復失敗] ${safeErrorMessage(error)}`
+      );
     }
 
     // 地震情報の取得
@@ -125,49 +156,61 @@ function processEarthquakeEvent(event) {
   const { created, skipped } = createNotificationRecords(event, employees, sendMode);
   Logger.log(`通知レコード: 新規作成=${created}, スキップ=${skipped}`);
 
-  // pending通知を送信
-  let sentCount = 0;
-  let failedCount = 0;
-  let incomplete = false;
-
+  let sendResult;
   try {
-    const result = processPendingNotifications(event.eventId, event, isTestMode);
-    sentCount = result.sent;
-    failedCount = result.failed;
-    incomplete = result.incomplete;
+    sendResult = processPendingNotifications(
+      event.eventId,
+      event,
+      isTestMode
+    );
+
   } catch (err) {
     const errMsg = safeErrorMessage(err);
     Logger.log(`通知送信中にエラー: ${errMsg}`);
     appendSendError({ eventId: event.eventId, channel: sendMode, error: errMsg });
     notifyAdmin(`[送信エラー] ${errMsg}`);
+    sendResult = {
+      sent: 0,
+      failed: 0,
+      incomplete: false,
+    };
   }
 
-  Logger.log(`送信結果: 送信済=${sentCount}, 失敗=${failedCount}, 未完了=${incomplete}`);
+  let aggregateResult;
 
-  // イベントステータスを更新
-  let finalStatus;
   if (isTestMode) {
-    finalStatus = EVENT_STATUS.TEST_COMPLETED;
-  } else if (incomplete) {
-    finalStatus = EVENT_STATUS.PROCESSING; // 次回トリガーで続きを処理
-  } else if (failedCount === 0) {
-    finalStatus = EVENT_STATUS.COMPLETED;
-  } else if (sentCount > 0) {
-    finalStatus = EVENT_STATUS.PARTIAL_FAILED;
+    updateEvent(event.eventId, {
+      status: EVENT_STATUS.TEST_COMPLETED,
+      completed_at: nowIso(),
+    });
+    aggregateResult = {
+      status: EVENT_STATUS.TEST_COMPLETED,
+      sentCount: sendResult.sent,
+      failedCount: sendResult.failed,
+    };
+
   } else {
-    finalStatus = EVENT_STATUS.FAILED;
+    aggregateResult = updateEventAggregateStatus(
+      event.eventId,
+      sendResult.incomplete
+    );
   }
 
-  updateEvent(event.eventId, {
-    status: finalStatus,
-    sent_count: sentCount,
-    failed_count: failedCount,
-    completed_at: incomplete ? '' : nowIso(),
-  });
+  Logger.log(
+    `送信結果: 送信済=${sendResult.sent}, ` +
+    `失敗=${sendResult.failed}, ` +
+    `未完了=${sendResult.incomplete}, ` +
+    `合計送信済=${aggregateResult.sentCount}, ` +
+    `合計失敗=${aggregateResult.failedCount}`
+  );
 
   // 失敗がある場合は管理者へ通知
-  if (failedCount > 0) {
-    notifyAdmin(`[送信失敗] event_id=${event.eventId}: ${failedCount}件の送信が失敗しました。resendFailedNotifications()で再送できます。`);
+  if (sendResult.failed > 0) {
+    notifyAdmin(
+      `[送信失敗] event_id=${event.eventId}: ` +
+      `${sendResult.failed}件の送信が失敗しました。` +
+      'resendFailedNotifications()で再送できます。'
+    );
   }
 
   // summaryを生成
@@ -179,5 +222,8 @@ function processEarthquakeEvent(event) {
     }
   }
 
-  Logger.log(`地震処理完了: eventId=${event.eventId}, status=${finalStatus}`);
+  Logger.log(
+    `地震処理完了: eventId=${event.eventId}, ` +
+    `status=${aggregateResult.status}`
+  );
 }

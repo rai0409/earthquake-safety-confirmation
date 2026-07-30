@@ -12,6 +12,8 @@ const DEFAULT_SETTINGS = [
   ['threshold', '5-', '通知する最低震度 (1/2/3/4/5-/5+/6-/6+/7)'],
   ['max_event_age_minutes', '30', '地震発生からの最大経過時間（分）'],
   ['check_interval_minutes', '10', '地震確認トリガーの間隔（分）'],
+  ['stale_sending_minutes', '30', 'sending状態をstaleと判断する時間（分）'],
+  ['form_response_sheet_name', 'フォームの回答 1', 'Googleフォームの回答先シート名'],
   ['admin_email', '', '管理者メールアドレス'],
   ['test_recipient_email', '', 'テスト送信先メールアドレス'],
   ['form_base_url', '', 'GoogleフォームURL (viewform形式)'],
@@ -47,11 +49,88 @@ function setupSpreadsheet() {
   _setupSheet(SHEET.NOTIFICATION_STATUS, NS_HEADERS);
   _setupSheet(SHEET.SEND_ERRORS, ['timestamp', 'event_id', 'employee_id', 'email', 'channel', 'attempt', 'response_code', 'error']);
   _setupSheet(SHEET.SUMMARY, ['event_id', 'occurred_at', 'hypocenter', 'max_intensity', 'target_employee_count', 'sent_count', 'failed_count', 'response_count', 'unanswered_count', 'response_rate', 'no_damage_count', 'personal_injury_count', 'family_damage_count', 'property_damage_count', 'multiple_damage_count', 'difficult_to_respond_count', 'available_to_work_count', 'unavailable_disaster_count', 'unavailable_other_count', 'last_updated_at']);
-
+  _setupSheet(
+    SHEET.CURRENT_EVENT_DETAILS,
+    ['section', 'employee_id', 'email', 'status', 'comment']
+  );
   Logger.log('setupSpreadsheet: 完了');
   Logger.log('次のステップ: settingsシートへ必要な値を入力し、installTriggers()を実行してください');
 }
 
+/**
+ * 管理対象スプレッドシートIDをScript Propertiesへ保存する
+ *
+ * @param {string} spreadsheetId
+ */
+function setSpreadsheetId(spreadsheetId) {
+  const normalizedId = String(spreadsheetId || '').trim();
+
+  if (!normalizedId) {
+    throw new Error('spreadsheetIdを指定してください');
+  }
+
+  SpreadsheetApp.openById(normalizedId);
+
+  PropertiesService
+    .getScriptProperties()
+    .setProperty('SPREADSHEET_ID', normalizedId);
+
+  Logger.log('SPREADSHEET_IDを保存しました');
+}
+
+/**
+ * 現在の管理対象スプレッドシートIDを確認する
+ *
+ * @returns {string}
+ */
+function getConfiguredSpreadsheetId() {
+  const spreadsheetId = PropertiesService
+    .getScriptProperties()
+    .getProperty('SPREADSHEET_ID') || '';
+
+  Logger.log(
+    spreadsheetId
+      ? `SPREADSHEET_ID=${spreadsheetId}`
+      : 'SPREADSHEET_IDは未設定です'
+  );
+
+  return spreadsheetId;
+}
+
+/**
+ * 固定訓練イベントを使用して送信処理を実行する
+ */
+function runDrillEarthquake() {
+  clearSettingsCache();
+
+  if (getBoolSetting('test_mode', true)) {
+    throw new Error(
+      'runDrillEarthquakeを実行する前に、' +
+      'settings.test_modeをFALSEへ変更してください。' +
+      '1通だけの確認にはsendTestNotification()を使用してください。'
+    );
+  }
+
+  const eventId = `DRILL-${
+    Utilities.formatDate(
+      new Date(),
+      'Asia/Tokyo',
+      'yyyyMMddHHmmss'
+    )
+  }`;
+
+  processEarthquakeEvent({
+    eventId,
+    occurredAt: new Date(),
+    announcedAt: new Date(),
+    hypocenter: '安否確認訓練',
+    magnitude: null,
+    maxIntensity: '5-',
+    sourceUrl: 'drill://manual',
+  });
+
+  Logger.log(`訓練イベントを実行しました: ${eventId}`);
+}
 /**
  * settingsシートをセットアップ（デフォルト値付き）
  */

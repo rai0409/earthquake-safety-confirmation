@@ -185,14 +185,23 @@ function validateTriggers() {
 }
 
 /**
- * form_responsesシートの存在を確認
+ * Googleフォーム回答先シートの存在を確認
  * @returns {string[]}
  */
 function validateFormResponseSheet() {
   const issues = [];
-  const sheet = getSheet(SHEET.FORM_RESPONSES);
+  const sheetName = String(
+    getSetting(
+      'form_response_sheet_name',
+      'フォームの回答 1'
+    )
+  ).trim();
+  const sheet = getFormResponseSheet();
   if (!sheet) {
-    issues.push(`${ERROR_CATEGORY.CONFIG_MISSING}: form_responsesシートが見つかりません (Googleフォームの回答先として設定してください)`);
+    issues.push(
+      `${ERROR_CATEGORY.CONFIG_MISSING}: ` +
+      `Googleフォーム回答先シート "${sheetName}" が見つかりません`
+    );
   }
   return issues;
 }
