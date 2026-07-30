@@ -1,0 +1,34 @@
+# Google Apps Script / clasp
+.clasp.json
+.clasprc.json
+
+# Credentials and secrets
+.env
+.env.*
+!.env.example
+credentials.json
+client_secret*.json
+token.json
+secrets.json
+*.pem
+*.key
+
+# Editors and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs and temporary files
+*.log
+tmp/
+temp/
+.cache/
+
+# Node.js
+node_modules/
+
+# Generated outputs
+artifacts/
+test-output/
