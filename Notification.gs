@@ -137,6 +137,7 @@ function createNotificationRecords(event, employees, channel) {
         notificationKey,
         eventId: event.eventId,
         employeeId: emp.employeeId,
+        name: emp.name,
         email: emp.email,
         channel,
         status: NOTIFICATION_STATUS.PENDING,
@@ -164,7 +165,10 @@ function processPendingNotifications(eventId, event, isTestMode) {
     throw new Error(`不正なsend_mode: "${sendMode}". "gmail" または "outlook" を設定してください`);
   }
 
-  const pendingList = getPendingNotifications(eventId);
+  const allPendingList = getPendingNotifications(eventId);
+  const pendingList = isTestMode
+    ? allPendingList.slice(0, 1)
+    : allPendingList;
   const testRecipient = getSetting('test_recipient_email', '');
 
   let sentCount = 0;
@@ -232,6 +236,7 @@ function processPendingNotifications(eventId, event, isTestMode) {
     let actualRecipient;
     if (isTestMode) {
       if (!testRecipient || !isValidEmail(testRecipient)) {
+        failedCount++;
         Logger.log(`テストモード: test_recipient_emailが未設定のためスキップ`);
         updateNotification(notificationKey, {
           status: NOTIFICATION_STATUS.SKIPPED,
@@ -241,14 +246,17 @@ function processPendingNotifications(eventId, event, isTestMode) {
       }
       actualRecipient = { email: testRecipient, name: 'テスト受信者' };
     } else {
-      actualRecipient = { email: employeeEmail, name: String(n.employee_id) };
+      actualRecipient = {
+        email: employeeEmail,
+        name: String(n.name || n.employee_id),
+      };
     }
 
     // フォームURLの生成
     let formUrl;
     const tempEmployee = {
       employeeId: String(n.employee_id),
-      name: String(n.employee_id), // nameはfindから取得できないためemployeeIdで代用、後でemployeeから取得する処理に改善可
+      name: String(n.name || n.employee_id),
       email: employeeEmail,
     };
     try {

@@ -1,57 +1,119 @@
 /**
  * OutlookSender.gs
- * Microsoft Graph API を使ったOutlookメール送信
- * Power Automate は使用しない
+ * Microsoft Graph APIを使ったOutlookメール送信
+ * Power Automateは使用しない
  */
 
-const GRAPH_TOKEN_CACHE_KEY = 'ms_graph_access_token';
-const GRAPH_TOKEN_EXPIRY_KEY = 'ms_graph_token_expires_at';
-// トークンはキャッシュに保存するが有効期限より短くする（余裕を1分持たせる）
+const GRAPH_TOKEN_CACHE_KEY =
+  'ms_graph_access_token';
+
+// トークン有効期限より短くキャッシュするための余裕
 const TOKEN_EXPIRY_BUFFER_SECONDS = 60;
 
-// Graph API エンドポイント
-const GRAPH_SEND_MAIL_PATH = 'https://graph.microsoft.com/v1.0/users/{senderEmail}/sendMail';
-const GRAPH_TOKEN_URL = 'https://login.microsoftonline.com/{tenantId}/oauth2/v2.0/token';
+// Microsoft Graph APIエンドポイント
+const GRAPH_SEND_MAIL_PATH =
+  'https://graph.microsoft.com/v1.0/users/{senderEmail}/sendMail';
+
+const GRAPH_TOKEN_URL =
+  'https://login.microsoftonline.com/{tenantId}/oauth2/v2.0/token';
 
 // 再試行対象ステータスコード
-const RETRY_STATUS_CODES = [429, 500, 502, 503, 504];
+const RETRY_STATUS_CODES = [
+  429,
+  500,
+  502,
+  503,
+  504,
+];
+
 // 再試行しないステータスコード
-const NO_RETRY_STATUS_CODES = [400, 401, 403, 404];
+const NO_RETRY_STATUS_CODES = [
+  400,
+  401,
+  403,
+  404,
+];
 
 /**
- * Outlook送信に必要なScript Propertiesを検証
- * @returns {{ ok: boolean, missing: string[] }}
+ * Outlook送信に必要なScript Propertiesを検証する。
+ *
+ * @returns {{
+ *   ok: boolean,
+ *   missing: string[]
+ * }}
  */
 function validateMicrosoftConfiguration() {
-  const props = PropertiesService.getScriptProperties();
-  const required = ['MS_TENANT_ID', 'MS_CLIENT_ID', 'MS_CLIENT_SECRET', 'MS_SENDER_EMAIL'];
-  const missing = required.filter(key => !props.getProperty(key));
-  return { ok: missing.length === 0, missing };
+  const properties =
+    PropertiesService.getScriptProperties();
+
+  const requiredKeys = [
+    'MS_TENANT_ID',
+    'MS_CLIENT_ID',
+    'MS_CLIENT_SECRET',
+    'MS_SENDER_EMAIL',
+  ];
+
+  const missing = requiredKeys.filter(key => {
+    const value = properties.getProperty(key);
+    return !value || !String(value).trim();
+  });
+
+  return {
+    ok: missing.length === 0,
+    missing,
+  };
 }
 
 /**
- * Microsoft Graph API アクセストークンを取得
- * CacheServiceへの保存はアクセストークンのみ（client secretは保存しない）
- * @returns {string|null} アクセストークン or null
+ * Microsoft Graph APIのアクセストークンを取得する。
+ *
+ * client secretはScript Propertiesから読み取り、
+ * CacheServiceにはアクセストークンだけを保存する。
+ *
+ * @returns {string|null}
  */
 function getMicrosoftAccessToken() {
   const cache = CacheService.getScriptCache();
 
-  // キャッシュから取得を試みる
-  const cachedToken = cache.get(GRAPH_TOKEN_CACHE_KEY);
-  if (cachedToken) return cachedToken;
+  const cachedToken = cache.get(
+    GRAPH_TOKEN_CACHE_KEY
+  );
 
-  const props = PropertiesService.getScriptProperties();
-  const tenantId = props.getProperty('MS_TENANT_ID');
-  const clientId = props.getProperty('MS_CLIENT_ID');
-  const clientSecret = props.getProperty('MS_CLIENT_SECRET');
+  if (cachedToken) {
+    return cachedToken;
+  }
 
-  if (!tenantId || !clientId || !clientSecret) {
-    Logger.log(`${ERROR_CATEGORY.OUTLOOK_TOKEN_FAILED}: ${ERROR_CATEGORY.CONFIG_MISSING} - Script Propertiesが不足しています`);
+  const properties =
+    PropertiesService.getScriptProperties();
+
+  const tenantId = String(
+    properties.getProperty('MS_TENANT_ID') || ''
+  ).trim();
+  const clientId = String(
+    properties.getProperty('MS_CLIENT_ID') || ''
+  ).trim();
+  const clientSecret = String(
+    properties.getProperty('MS_CLIENT_SECRET') || ''
+  ).trim();
+
+  if (
+    !tenantId ||
+    !clientId ||
+    !clientSecret
+  ) {
+    Logger.log(
+      `${ERROR_CATEGORY.OUTLOOK_TOKEN_FAILED}: ` +
+      `${ERROR_CATEGORY.CONFIG_MISSING} - ` +
+      'Script Propertiesが不足しています'
+    );
+
     return null;
   }
 
-  const tokenUrl = GRAPH_TOKEN_URL.replace('{tenantId}', encodeURIComponent(tenantId));
+  const tokenUrl = GRAPH_TOKEN_URL.replace(
+    '{tenantId}',
+    encodeURIComponent(tenantId)
+  );
 
   const payload = {
     client_id: clientId,
@@ -62,169 +124,436 @@ function getMicrosoftAccessToken() {
 
   const options = {
     method: 'post',
-    contentType: 'application/x-www-form-urlencoded',
+    contentType:
+      'application/x-www-form-urlencoded',
     payload: Object.entries(payload)
-      .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
+      .map(([key, value]) =>
+        `${encodeURIComponent(key)}=` +
+        `${encodeURIComponent(value)}`
+      )
       .join('&'),
     muteHttpExceptions: true,
   };
 
   let response;
+
   try {
-    response = UrlFetchApp.fetch(tokenUrl, options);
-  } catch (err) {
-    Logger.log(`${ERROR_CATEGORY.OUTLOOK_TOKEN_FAILED}: ネットワークエラー - ${safeErrorMessage(err)}`);
+    response = UrlFetchApp.fetch(
+      tokenUrl,
+      options
+    );
+  } catch (error) {
+    Logger.log(
+      `${ERROR_CATEGORY.OUTLOOK_TOKEN_FAILED}: ` +
+      `ネットワークエラー - ` +
+      `${safeErrorMessage(error)}`
+    );
+
     return null;
   }
 
-  const code = response.getResponseCode();
-  if (code !== 200) {
-    // secretやtokenをログへ出さない
-    Logger.log(`${ERROR_CATEGORY.OUTLOOK_TOKEN_FAILED}: HTTP ${code}`);
+  const responseCode =
+    response.getResponseCode();
+
+  if (responseCode !== 200) {
+    Logger.log(
+      `${ERROR_CATEGORY.OUTLOOK_TOKEN_FAILED}: ` +
+      `HTTP ${responseCode}`
+    );
+
     return null;
   }
 
   let tokenData;
+
   try {
-    tokenData = JSON.parse(response.getContentText());
-  } catch (err) {
-    Logger.log(`${ERROR_CATEGORY.OUTLOOK_TOKEN_FAILED}: レスポンス解析失敗`);
+    tokenData = JSON.parse(
+      response.getContentText()
+    );
+  } catch (error) {
+    Logger.log(
+      `${ERROR_CATEGORY.OUTLOOK_TOKEN_FAILED}: ` +
+      'レスポンス解析失敗'
+    );
+
     return null;
   }
 
-  const accessToken = tokenData['access_token'];
+  const accessToken = String(
+    tokenData['access_token'] || ''
+  ).trim();
+
   if (!accessToken) {
-    Logger.log(`${ERROR_CATEGORY.OUTLOOK_TOKEN_FAILED}: access_tokenが取得できませんでした`);
+    Logger.log(
+      `${ERROR_CATEGORY.OUTLOOK_TOKEN_FAILED}: ` +
+      'access_tokenが取得できませんでした'
+    );
+
     return null;
   }
 
-  // 有効期限（expiresIn）よりバッファを引いた時間だけキャッシュ
-  const expiresIn = tokenData['expires_in'] || 3600;
-  const cacheDuration = Math.max(60, expiresIn - TOKEN_EXPIRY_BUFFER_SECONDS);
-  // CacheServiceの上限は21600秒
-  const cacheSeconds = Math.min(cacheDuration, 21600);
-  cache.put(GRAPH_TOKEN_CACHE_KEY, accessToken, cacheSeconds);
+  const parsedExpiresIn = Number(
+    tokenData['expires_in']
+  );
+  const expiresIn = Number.isFinite(
+    parsedExpiresIn
+  )
+    ? parsedExpiresIn
+    : 3600;
+
+  const cacheDuration = Math.max(
+    60,
+    expiresIn -
+      TOKEN_EXPIRY_BUFFER_SECONDS
+  );
+
+  // CacheServiceの保存上限は21600秒
+  const cacheSeconds = Math.min(
+    cacheDuration,
+    21600
+  );
+
+  cache.put(
+    GRAPH_TOKEN_CACHE_KEY,
+    accessToken,
+    cacheSeconds
+  );
 
   return accessToken;
 }
 
 /**
- * 再試行付きHTTPリクエスト
- * @param {string} url
- * @param {Object} options - UrlFetchApp.fetch オプション
- * @param {Object} retryConfig - { maxAttempts, waitSeconds }
- * @returns {{ response: HTTPResponse|null, attempts: number, error: string|null }}
+ * Microsoft Graphのアクセストークンキャッシュを削除する。
  */
-function fetchWithRetry(url, options, retryConfig) {
-  const maxAttempts = retryConfig.maxAttempts || 3;
-  const waitSeconds = retryConfig.waitSeconds || 3;
-  let lastError = null;
-  let response = null;
-
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    try {
-      response = UrlFetchApp.fetch(url, options);
-    } catch (err) {
-      lastError = safeErrorMessage(err);
-      Logger.log(`fetchWithRetry 試行${attempt}/${maxAttempts}: ネットワークエラー - ${lastError}`);
-      if (attempt < maxAttempts) sleepSeconds(waitSeconds);
-      continue;
-    }
-
-    const code = response.getResponseCode();
-
-    if (code === 202 || (code >= 200 && code < 300)) {
-      return { response, attempts: attempt, error: null };
-    }
-
-    // 再試行しないコード
-    if (NO_RETRY_STATUS_CODES.includes(code)) {
-      Logger.log(`fetchWithRetry: HTTP ${code} は再試行対象外`);
-      return { response, attempts: attempt, error: `HTTP ${code}` };
-    }
-
-    // 再試行対象コード
-    if (RETRY_STATUS_CODES.includes(code)) {
-      lastError = `HTTP ${code}`;
-      Logger.log(`fetchWithRetry 試行${attempt}/${maxAttempts}: HTTP ${code}`);
-
-      // 429 Retry-After ヘッダーを可能な範囲で尊重
-      if (code === 429 && attempt < maxAttempts) {
-        const headers = response.getAllHeaders();
-        const retryAfterStr = headers['Retry-After'] || headers['retry-after'];
-        const retryAfterSeconds = retryAfterStr ? parseInt(retryAfterStr, 10) : waitSeconds;
-        // Apps Scriptの実行時間を超えないよう上限を設ける
-        const actualWait = Math.min(retryAfterSeconds, 30);
-        Logger.log(`429 Retry-After: ${actualWait}秒待機`);
-        sleepSeconds(actualWait);
-        continue;
-      }
-
-      if (attempt < maxAttempts) sleepSeconds(waitSeconds);
-      continue;
-    }
-
-    // その他のステータスコード
-    lastError = `HTTP ${code}`;
-    Logger.log(`fetchWithRetry: 予期しないステータスコード ${code}`);
-    return { response, attempts: attempt, error: lastError };
-  }
-
-  return { response, attempts: maxAttempts, error: lastError };
+function clearMicrosoftAccessTokenCache() {
+  CacheService
+    .getScriptCache()
+    .remove(GRAPH_TOKEN_CACHE_KEY);
 }
 
 /**
- * Microsoft Graph API でメールを1通送信
- * @param {Object} recipient - { email, name }
+ * 再試行付きでHTTPリクエストを実行する。
+ *
+ * @param {string} url
+ * @param {Object} options
+ * @param {{
+ *   maxAttempts: number,
+ *   waitSeconds: number
+ * }} retryConfig
+ * @returns {{
+ *   response: GoogleAppsScript.URL_Fetch.HTTPResponse|null,
+ *   attempts: number,
+ *   error: string|null
+ * }}
+ */
+function fetchWithRetry(
+  url,
+  options,
+  retryConfig
+) {
+  const configuredMaxAttempts = Number(
+    retryConfig &&
+    retryConfig.maxAttempts
+  );
+  const configuredWaitSeconds = Number(
+    retryConfig &&
+    retryConfig.waitSeconds
+  );
+
+  const maxAttempts = Math.max(
+    1,
+    Number.isFinite(configuredMaxAttempts)
+      ? Math.floor(configuredMaxAttempts)
+      : 3
+  );
+
+  const waitSeconds = Math.max(
+    0,
+    Number.isFinite(configuredWaitSeconds)
+      ? configuredWaitSeconds
+      : 3
+  );
+
+  let lastError = null;
+  let lastResponse = null;
+
+  for (
+    let attempt = 1;
+    attempt <= maxAttempts;
+    attempt++
+  ) {
+    try {
+      lastResponse = UrlFetchApp.fetch(
+        url,
+        options
+      );
+    } catch (error) {
+      lastError = safeErrorMessage(error);
+
+      Logger.log(
+        `fetchWithRetry 試行` +
+        `${attempt}/${maxAttempts}: ` +
+        `ネットワークエラー - ${lastError}`
+      );
+
+      if (attempt < maxAttempts) {
+        sleepSeconds(waitSeconds);
+      }
+
+      continue;
+    }
+
+    const responseCode =
+      lastResponse.getResponseCode();
+
+    if (
+      responseCode >= 200 &&
+      responseCode < 300
+    ) {
+      return {
+        response: lastResponse,
+        attempts: attempt,
+        error: null,
+      };
+    }
+
+    if (
+      NO_RETRY_STATUS_CODES.includes(
+        responseCode
+      )
+    ) {
+      Logger.log(
+        `fetchWithRetry: HTTP ${responseCode} ` +
+        'は再試行対象外'
+      );
+
+      return {
+        response: lastResponse,
+        attempts: attempt,
+        error: `HTTP ${responseCode}`,
+      };
+    }
+
+    if (
+      RETRY_STATUS_CODES.includes(
+        responseCode
+      )
+    ) {
+      lastError = `HTTP ${responseCode}`;
+
+      Logger.log(
+        `fetchWithRetry 試行` +
+        `${attempt}/${maxAttempts}: ` +
+        `HTTP ${responseCode}`
+      );
+
+      if (attempt >= maxAttempts) {
+        break;
+      }
+
+      if (responseCode === 429) {
+        const retryAfterSeconds =
+          getRetryAfterSeconds(
+            lastResponse,
+            waitSeconds
+          );
+
+        const actualWaitSeconds = Math.min(
+          retryAfterSeconds,
+          30
+        );
+
+        Logger.log(
+          `429 Retry-After: ` +
+          `${actualWaitSeconds}秒待機`
+        );
+
+        sleepSeconds(actualWaitSeconds);
+      } else {
+        sleepSeconds(waitSeconds);
+      }
+
+      continue;
+    }
+
+    lastError = `HTTP ${responseCode}`;
+
+    Logger.log(
+      'fetchWithRetry: ' +
+      `予期しないステータスコード ` +
+      `${responseCode}`
+    );
+
+    return {
+      response: lastResponse,
+      attempts: attempt,
+      error: lastError,
+    };
+  }
+
+  return {
+    response: lastResponse,
+    attempts: maxAttempts,
+    error: lastError,
+  };
+}
+
+/**
+ * Retry-Afterヘッダーから待機秒数を取得する。
+ *
+ * 秒数形式とHTTP-date形式の両方に対応する。
+ *
+ * @param {GoogleAppsScript.URL_Fetch.HTTPResponse} response
+ * @param {number} fallbackSeconds
+ * @returns {number}
+ */
+function getRetryAfterSeconds(
+  response,
+  fallbackSeconds
+) {
+  const headers = response.getAllHeaders();
+
+  const rawValue =
+    headers['Retry-After'] ||
+    headers['retry-after'];
+
+  if (
+    rawValue === null ||
+    rawValue === undefined ||
+    rawValue === ''
+  ) {
+    return Math.max(0, fallbackSeconds);
+  }
+
+  const numericSeconds = Number(rawValue);
+
+  if (
+    Number.isFinite(numericSeconds) &&
+    numericSeconds >= 0
+  ) {
+    return numericSeconds;
+  }
+
+  const retryDateMs = new Date(
+    String(rawValue)
+  ).getTime();
+
+  if (Number.isFinite(retryDateMs)) {
+    return Math.max(
+      0,
+      Math.ceil(
+        (retryDateMs - Date.now()) / 1000
+      )
+    );
+  }
+
+  return Math.max(0, fallbackSeconds);
+}
+
+/**
+ * Microsoft Graph APIでメールを1通送信する。
+ *
+ * @param {{
+ *   email: string,
+ *   name?: string
+ * }} recipient
  * @param {string} subject
  * @param {string} htmlBody
- * @returns {{ success: boolean, responseCode: number|null, error: string|null }}
+ * @returns {{
+ *   success: boolean,
+ *   responseCode: number|null,
+ *   error: string|null
+ * }}
  */
-function sendMailOutlook(recipient, subject, htmlBody) {
-  const validation = validateMicrosoftConfiguration();
+function sendMailOutlook(
+  recipient,
+  subject,
+  htmlBody
+) {
+  const recipientEmail = String(
+    recipient && recipient.email
+      ? recipient.email
+      : ''
+  ).trim();
+
+  if (
+    !recipientEmail ||
+    !isValidEmail(recipientEmail)
+  ) {
+    return {
+      success: false,
+      responseCode: null,
+      error: '送信先メールアドレスが無効です',
+    };
+  }
+
+  const validation =
+    validateMicrosoftConfiguration();
+
   if (!validation.ok) {
     return {
       success: false,
       responseCode: null,
-      error: `${ERROR_CATEGORY.CONFIG_MISSING}: ${validation.missing.join(', ')}`,
+      error:
+        `${ERROR_CATEGORY.CONFIG_MISSING}: ` +
+        `${validation.missing.join(', ')}`,
     };
   }
 
-  const accessToken = getMicrosoftAccessToken();
+  const properties =
+    PropertiesService.getScriptProperties();
+
+  const senderEmail = String(
+    properties.getProperty(
+      'MS_SENDER_EMAIL'
+    ) || ''
+  ).trim();
+
+  if (
+    !senderEmail ||
+    !isValidEmail(senderEmail)
+  ) {
+    return {
+      success: false,
+      responseCode: null,
+      error:
+        `${ERROR_CATEGORY.CONFIG_MISSING}: ` +
+        'MS_SENDER_EMAILが未設定または無効です',
+    };
+  }
+
+  let accessToken =
+    getMicrosoftAccessToken();
+
   if (!accessToken) {
     return {
       success: false,
       responseCode: null,
-      error: ERROR_CATEGORY.OUTLOOK_TOKEN_FAILED,
+      error:
+        ERROR_CATEGORY.OUTLOOK_TOKEN_FAILED,
     };
   }
 
-  const props = PropertiesService.getScriptProperties();
-  const senderEmail = props.getProperty('MS_SENDER_EMAIL');
-  // settingsのoutlook_sender_emailもフォールバックとして使用可能
-  const effectiveSenderEmail = senderEmail || getSetting('outlook_sender_email', '');
-  if (!effectiveSenderEmail) {
-    return {
-      success: false,
-      responseCode: null,
-      error: `${ERROR_CATEGORY.CONFIG_MISSING}: MS_SENDER_EMAILが設定されていません`,
-    };
-  }
-
-  const endpoint = GRAPH_SEND_MAIL_PATH.replace('{senderEmail}', encodeURIComponent(effectiveSenderEmail));
+  const endpoint =
+    GRAPH_SEND_MAIL_PATH.replace(
+      '{senderEmail}',
+      encodeURIComponent(senderEmail)
+    );
 
   const mailPayload = {
     message: {
-      subject: subject,
+      subject: String(subject || ''),
       body: {
         contentType: 'HTML',
-        content: htmlBody,
+        content: String(htmlBody || ''),
       },
       toRecipients: [
         {
           emailAddress: {
-            address: recipient.email,
-            name: recipient.name || '',
+            address: recipientEmail,
+            name: String(
+              recipient.name || ''
+            ),
           },
         },
       ],
@@ -232,53 +561,165 @@ function sendMailOutlook(recipient, subject, htmlBody) {
     saveToSentItems: true,
   };
 
-  const options = {
-    method: 'post',
-    contentType: 'application/json',
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-    },
-    payload: JSON.stringify(mailPayload),
-    muteHttpExceptions: true,
-  };
-
   const retryConfig = {
-    maxAttempts: getNumSetting('retry_max_attempts', 3),
-    waitSeconds: getNumSetting('retry_wait_seconds', 3),
+    maxAttempts: getNumSetting(
+      'retry_max_attempts',
+      3
+    ),
+    waitSeconds: getNumSetting(
+      'retry_wait_seconds',
+      3
+    ),
   };
 
-  const { response, attempts, error } = fetchWithRetry(endpoint, options, retryConfig);
+  let sendResult = executeGraphSendMail(
+    endpoint,
+    accessToken,
+    mailPayload,
+    retryConfig
+  );
+
+  /*
+   * キャッシュ済みtokenが失効している場合だけ、
+   * キャッシュを削除して新しいtokenで1回再実行する。
+   */
+  if (
+    sendResult.response &&
+    sendResult.response.getResponseCode() === 401
+  ) {
+    clearMicrosoftAccessTokenCache();
+
+    accessToken =
+      getMicrosoftAccessToken();
+
+    if (accessToken) {
+      sendResult = executeGraphSendMail(
+        endpoint,
+        accessToken,
+        mailPayload,
+        retryConfig
+      );
+    }
+  }
+
+  const response = sendResult.response;
+  const attempts = sendResult.attempts;
+  const error = sendResult.error;
 
   if (!response) {
     return {
       success: false,
       responseCode: null,
-      error: error || ERROR_CATEGORY.OUTLOOK_SEND_FAILED,
+      error:
+        error ||
+        ERROR_CATEGORY.OUTLOOK_SEND_FAILED,
     };
   }
 
-  const code = response.getResponseCode();
-  Logger.log(`Outlook送信: ${recipient.email} HTTP ${code} 試行${attempts}回`);
+  const responseCode =
+    response.getResponseCode();
 
-  if (code === 202) {
-    return { success: true, responseCode: code, error: null };
+  Logger.log(
+    `Outlook送信: ${recipientEmail} ` +
+    `HTTP ${responseCode} ` +
+    `試行${attempts}回`
+  );
+
+  if (
+    responseCode >= 200 &&
+    responseCode < 300
+  ) {
+    return {
+      success: true,
+      responseCode,
+      error: null,
+    };
   }
 
-  // エラーカテゴリの分類
-  let errorCategory = ERROR_CATEGORY.OUTLOOK_SEND_FAILED;
-  if (code === 401 || code === 403) {
-    errorCategory = ERROR_CATEGORY.OUTLOOK_PERMISSION_DENIED;
-    // 401の場合はトークンキャッシュをクリア
-    if (code === 401) {
-      CacheService.getScriptCache().remove(GRAPH_TOKEN_CACHE_KEY);
-    }
-  } else if (code === 429) {
-    errorCategory = ERROR_CATEGORY.OUTLOOK_RATE_LIMITED;
+  const errorCategory =
+    classifyOutlookSendError(
+      responseCode
+    );
+
+  if (responseCode === 401) {
+    clearMicrosoftAccessTokenCache();
   }
 
   return {
     success: false,
-    responseCode: code,
-    error: `${errorCategory}: HTTP ${code} (試行${attempts}回)`,
+    responseCode,
+    error:
+      `${errorCategory}: ` +
+      `HTTP ${responseCode} ` +
+      `(試行${attempts}回)`,
   };
+}
+
+/**
+ * Graph sendMailリクエストを実行する。
+ *
+ * @param {string} endpoint
+ * @param {string} accessToken
+ * @param {Object} mailPayload
+ * @param {{
+ *   maxAttempts: number,
+ *   waitSeconds: number
+ * }} retryConfig
+ * @returns {{
+ *   response: GoogleAppsScript.URL_Fetch.HTTPResponse|null,
+ *   attempts: number,
+ *   error: string|null
+ * }}
+ */
+function executeGraphSendMail(
+  endpoint,
+  accessToken,
+  mailPayload,
+  retryConfig
+) {
+  const options = {
+    method: 'post',
+    contentType: 'application/json',
+    headers: {
+      Authorization:
+        `Bearer ${accessToken}`,
+    },
+    payload: JSON.stringify(mailPayload),
+    muteHttpExceptions: true,
+  };
+
+  return fetchWithRetry(
+    endpoint,
+    options,
+    retryConfig
+  );
+}
+
+/**
+ * Graph送信失敗のHTTPコードを分類する。
+ *
+ * @param {number} responseCode
+ * @returns {string}
+ */
+function classifyOutlookSendError(
+  responseCode
+) {
+  if (
+    responseCode === 401 ||
+    responseCode === 403
+  ) {
+    return (
+      ERROR_CATEGORY
+        .OUTLOOK_PERMISSION_DENIED
+    );
+  }
+
+  if (responseCode === 429) {
+    return (
+      ERROR_CATEGORY
+        .OUTLOOK_RATE_LIMITED
+    );
+  }
+
+  return ERROR_CATEGORY.OUTLOOK_SEND_FAILED;
 }

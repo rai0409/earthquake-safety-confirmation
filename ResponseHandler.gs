@@ -40,7 +40,19 @@ function handleFormSubmit(e) {
     const comment = getValue(colComment);
 
     if (!eventId || !employeeId) {
-      Logger.log(`${ERROR_CATEGORY.FORM_RESPONSE_INVALID}: event_idまたはemployee_idが空`);
+      Logger.log(
+        `${ERROR_CATEGORY.FORM_RESPONSE_INVALID}: ` +
+        'event_idまたはemployee_idが空'
+      );
+      return;
+    }
+    const eventRecord = findEvent(eventId);
+
+    if (!eventRecord) {
+      Logger.log(
+        `${ERROR_CATEGORY.FORM_RESPONSE_INVALID}: ` +
+        `未登録event_id "${eventId}"`
+      );
       return;
     }
 
@@ -53,8 +65,11 @@ function handleFormSubmit(e) {
         responded_at: nowIso(),
       });
     } else {
-      // 通知レコードが見つからない場合でも回答を記録
-      Logger.log(`${ERROR_CATEGORY.EMPLOYEE_NOT_FOUND}: notification_key "${notificationKey}" が見つかりません。回答は記録されますがstatusは更新できません。`);
+      Logger.log(
+        `${ERROR_CATEGORY.EMPLOYEE_NOT_FOUND}: ` +
+        `notification_key "${notificationKey}" が見つかりません`
+      );
+      return;
     }
 
     // 緊急判定

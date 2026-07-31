@@ -10,8 +10,8 @@ const SHEET = {
   EARTHQUAKE_EVENTS: 'earthquake_events',
   NOTIFICATION_STATUS: 'notification_status',
   SEND_ERRORS: 'send_errors',
-  FORM_RESPONSES: 'form_responses',
   SUMMARY: 'summary',
+  CURRENT_EVENT_DETAILS: 'current_event_details',
 };
 
 // earthquake_events status 定数
@@ -56,6 +56,7 @@ const ERROR_CATEGORY = {
   OUTLOOK_SEND_FAILED: 'OUTLOOK_SEND_FAILED',
   FORM_RESPONSE_INVALID: 'FORM_RESPONSE_INVALID',
   EMPLOYEE_NOT_FOUND: 'EMPLOYEE_NOT_FOUND',
+  STALE_SENDING: 'STALE_SENDING',
 };
 
 // Apps Script実行時間余裕（秒）
